@@ -14,6 +14,7 @@ import (
 	"github.com/omec-project/openapi/v2"
 	"github.com/omec-project/openapi/v2/Nnrf_NFManagement"
 	"github.com/omec-project/openapi/v2/models"
+	openapiutils "github.com/omec-project/openapi/v2/utils"
 	udmContext "github.com/omec-project/udm/context"
 	"github.com/omec-project/udm/logger"
 )
@@ -43,7 +44,11 @@ func getNfProfile(udmContext *udmContext.UDMContext, plmnConfig []models.PlmnId)
 	profile.SetNfInstanceId(udmContext.NfId)
 	profile.SetNfType(models.NFTYPE_UDM)
 	profile.SetNfStatus(models.NFSTATUS_REGISTERED)
-	profile.SetIpv4Addresses([]string{udmContext.RegisterIPv4})
+	addrs := udmContext.SbiAddrs()
+	if addrs.Empty() {
+		return profile, openapi.ReportError("udm register address is empty. NF profile cannot be built")
+	}
+	openapiutils.SetNFProfileAddresses(&profile, addrs.FQDN, addrs.IPv4, addrs.IPv6)
 	services := map[string]models.NFService{}
 	serviceList := []models.NFService{}
 	for _, nfService := range udmContext.NfService {

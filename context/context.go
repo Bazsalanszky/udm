@@ -18,9 +18,11 @@ import (
 
 	"github.com/omec-project/openapi/v2/Nnrf_NFDiscovery"
 	"github.com/omec-project/openapi/v2/models"
+	openapiutils "github.com/omec-project/openapi/v2/utils"
 	"github.com/omec-project/udm/logger"
 	"github.com/omec-project/udm/suci"
 	"github.com/omec-project/util/idgenerator"
+	"github.com/omec-project/util/sbiaddr"
 )
 
 var udmContext UDMContext
@@ -44,8 +46,9 @@ type UDMContext struct {
 	Name                           string
 	NfId                           string
 	GroupId                        string
-	RegisterIPv4                   string // IP register to NRF
-	BindingIPv4                    string
+	RegisterIPv4                   string // IPv4 address or host name registered at the NRF
+	RegisterIPv6                   string // IPv6 address registered at the NRF
+	BindingIPv4                    string // SBI listen host; despite the name, of any family
 	UriScheme                      models.UriScheme
 	NfService                      map[models.ServiceName]models.NFService
 	NFDiscoveryClient              *Nnrf_NFDiscovery.APIClient
@@ -58,6 +61,7 @@ type UDMContext struct {
 	SuciProfiles                   []suci.SuciProfile
 	EeSubscriptionIDGenerator      *idgenerator.IDGenerator
 	SBIPort                        int
+	SbiPreference                  sbiaddr.Preference
 	EnableNrfCaching               bool
 	NrfCacheEvictionInterval       time.Duration
 }
@@ -398,11 +402,11 @@ func (context *UDMContext) GetAmfNon3gppRegContext(supi string) *models.AmfNon3G
 func (ue *UdmUeContext) GetLocationURI(types int) string {
 	switch types {
 	case LocationUriAmf3GppAccessRegistration:
-		return UDM_Self().GetIPv4Uri() + uecmUriPrefix + ue.Supi + "/registrations/amf-3gpp-access"
+		return UDM_Self().GetSbiUri() + uecmUriPrefix + ue.Supi + "/registrations/amf-3gpp-access"
 	case LocationUriAmfNon3GppAccessRegistration:
-		return UDM_Self().GetIPv4Uri() + uecmUriPrefix + ue.Supi + "/registrations/amf-non-3gpp-access"
+		return UDM_Self().GetSbiUri() + uecmUriPrefix + ue.Supi + "/registrations/amf-non-3gpp-access"
 	case LocationUriSmfRegistration:
-		return UDM_Self().GetIPv4Uri() + uecmUriPrefix + ue.Supi + "/registrations/smf-registrations/" + ue.PduSessionID
+		return UDM_Self().GetSbiUri() + uecmUriPrefix + ue.Supi + "/registrations/smf-registrations/" + ue.PduSessionID
 	}
 	return ""
 }
@@ -412,7 +416,7 @@ func (ue *UdmUeContext) GetLocationURI2(types int, ueId string) string {
 	case LocationUriSharedDataSubscription:
 		// return UDM_Self().GetIPv4Uri() + "/nudm-sdm/v1/shared-data-subscriptions/" + nf.SubscriptionID
 	case LocationUriSdmSubscription:
-		return UDM_Self().GetIPv4Uri() + "/nudm-sdm/v2/" + ueId + "/sdm-subscriptions/"
+		return UDM_Self().GetSbiUri() + "/nudm-sdm/v2/" + ueId + "/sdm-subscriptions/"
 	}
 	return ""
 }
@@ -441,13 +445,32 @@ func plmnIdNidEqual(left, right models.PlmnIdNid) bool {
 	return left.GetMcc() == right.GetMcc() && left.GetMnc() == right.GetMnc() && left.GetNid() == right.GetNid()
 }
 
+// SbiAddrs classifies the configured register hosts (RegisterIPv4 and
+// RegisterIPv6) into the FQDN, IPv4 and IPv6 addresses the UDM advertises.
+func (context *UDMContext) SbiAddrs() sbiaddr.RegisterAddrs {
+	addrs, err := sbiaddr.ParseRegister(context.RegisterIPv4, context.RegisterIPv6)
+	if err != nil {
+		// InitUDMContext has already warned about the configured values.
+		logger.CfgLog.Debugf("SBI register address: %v", err)
+	}
+	return addrs
+}
+
+// GetSbiUri is the UDM's own base URI, scheme://host:port, with an IPv6 host
+// in brackets.
+func (context *UDMContext) GetSbiUri() string {
+	return context.SbiAddrs().URI(string(context.UriScheme), context.SBIPort, context.SbiPreference)
+}
+
+// GetIPv4Uri is the former name of GetSbiUri, kept for existing callers.
+// Despite the name, the host may be an IPv6 address.
 func (context *UDMContext) GetIPv4Uri() string {
-	return fmt.Sprintf("%s://%s:%d", context.UriScheme, context.RegisterIPv4, context.SBIPort)
+	return context.GetSbiUri()
 }
 
 // GetSDMUri ... get subscriber data management service uri
 func (context *UDMContext) GetSDMUri() string {
-	return context.GetIPv4Uri() + "/nudm-sdm/v2"
+	return context.GetSbiUri() + "/nudm-sdm/v2"
 }
 
 func (context *UDMContext) InitNFService(serviceName []string, version string) {
@@ -459,10 +482,6 @@ func (context *UDMContext) InitNFService(serviceName []string, version string) {
 			logger.CfgLog.Errorf("invalid service name: %s (not in the list of valid service names)", nameString)
 			continue
 		}
-		ipEndPoint := models.NewIpEndPoint()
-		ipEndPoint.SetIpv4Address(context.RegisterIPv4)
-		ipEndPoint.SetTransport(models.TRANSPORTPROTOCOL_TCP)
-		ipEndPoint.SetPort(int32(context.SBIPort))
 		serviceVersion := models.NewNFServiceVersion(versionUri, version)
 		nfService := models.NewNFService(
 			strconv.Itoa(index),
@@ -471,8 +490,12 @@ func (context *UDMContext) InitNFService(serviceName []string, version string) {
 			context.UriScheme,
 			models.NFSERVICESTATUS_REGISTERED,
 		)
-		nfService.SetApiPrefix(context.GetIPv4Uri())
-		nfService.SetIpEndPoints([]models.IpEndPoint{*ipEndPoint})
+		addrs := context.SbiAddrs()
+		if addrs.FQDN != "" {
+			nfService.SetFqdn(addrs.FQDN)
+		}
+		nfService.SetApiPrefix(context.GetSbiUri())
+		nfService.SetIpEndPoints(openapiutils.NewIpEndPoints(addrs.IPv4, addrs.IPv6, int32(context.SBIPort)))
 		context.NfService[*name] = *nfService
 	}
 }
