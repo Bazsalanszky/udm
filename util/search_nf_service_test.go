@@ -38,8 +38,11 @@ func TestSearchNFServiceUri_PrefersProfileFqdnOverServiceApiPrefix(t *testing.T)
 
 	nfURI := SearchNFServiceUri(*profile, models.SERVICENAME_NUDR_DR, models.NFSERVICESTATUS_REGISTERED)
 
-	if nfURI != "profile.example.com" {
-		t.Fatalf("expected profile FQDN, got %q", nfURI)
+	// The profile FQDN wins over the apiPrefix. It is returned as a base URI:
+	// the service has no scheme and no endpoint, so http and its default port
+	// are used. It used to be the bare FQDN, which is not a usable apiRoot.
+	if nfURI != "http://profile.example.com:80" {
+		t.Fatalf("expected URI from the profile FQDN, got %q", nfURI)
 	}
 }
 

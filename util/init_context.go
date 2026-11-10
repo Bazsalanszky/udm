@@ -8,7 +8,9 @@
 package util
 
 import (
+	"cmp"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +19,7 @@ import (
 	"github.com/omec-project/udm/factory"
 	"github.com/omec-project/udm/logger"
 	"github.com/omec-project/udm/suci"
+	"github.com/omec-project/util/sbiaddr"
 )
 
 // InitUDMContext initializes the UDM context with configuration data.
@@ -32,6 +35,8 @@ func InitUDMContext(udmContext *context.UDMContext) {
 	// Initialize default SBI values
 	udmContext.SBIPort = factory.UDM_DEFAULT_PORT_INT
 	udmContext.RegisterIPv4 = factory.UDM_DEFAULT_IPV4
+	udmContext.RegisterIPv6 = ""
+	udmContext.SbiPreference = sbiaddr.PreferIPv4
 	udmContext.UriScheme = ""
 
 	// Refactored SBI and Binding logic
@@ -55,24 +60,47 @@ func initSbiSettings(udmContext *context.UDMContext, sbi *factory.Sbi) {
 	if sbi.Scheme != "" {
 		udmContext.UriScheme = models.UriScheme(sbi.Scheme)
 	}
-	if sbi.RegisterIPv4 != "" {
-		udmContext.RegisterIPv4 = sbi.RegisterIPv4
-	}
+	initRegisterAddrs(udmContext, sbi)
 	if sbi.Port != 0 {
 		udmContext.SBIPort = sbi.Port
 	}
 
-	// Handle Binding IPv4 logic: Check ENV first, then config, then default
-	udmContext.BindingIPv4 = os.Getenv(sbi.BindingIPv4)
-	if udmContext.BindingIPv4 != "" {
-		logger.UtilLog.Info("Parsing ServerIPv4 address from ENV Variable.")
-		return
-	}
-
-	udmContext.BindingIPv4 = sbi.BindingIPv4
-	if udmContext.BindingIPv4 == "" {
+	// Binding address: bindingAddr, else its legacy alias bindingIPv4; either
+	// may name an environment variable. The default is 0.0.0.0.
+	configured := cmp.Or(strings.TrimSpace(sbi.BindingAddr), strings.TrimSpace(sbi.BindingIPv4))
+	switch {
+	case configured == "":
 		logger.UtilLog.Warn("Error parsing ServerIPv4 address as string. Using the 0.0.0.0 address as default.")
-		udmContext.BindingIPv4 = "0.0.0.0"
+	case os.Getenv(configured) != "":
+		logger.UtilLog.Info("Parsing ServerIPv4 address from ENV Variable.")
+	}
+	var err error
+	if udmContext.BindingIPv4, err = sbiaddr.BindHost(sbi.BindingAddr, sbi.BindingIPv4); err != nil {
+		logger.UtilLog.Warnf("SBI binding address: %v", err)
+	}
+}
+
+// initRegisterAddrs sets RegisterIPv4 and RegisterIPv6 from the registerIPv4
+// and registerIPv6 settings. Each may be an address of either family, a host
+// name, or the name of an environment variable such as POD_IP or POD_IPS;
+// every value goes to the field of its own kind. When nothing usable is
+// configured, the UDM keeps its IPv4 default.
+func initRegisterAddrs(udmContext *context.UDMContext, sbi *factory.Sbi) {
+	addrs, err := sbiaddr.ResolveRegister(sbi.RegisterIPv4, sbi.RegisterIPv6)
+	if err != nil {
+		logger.UtilLog.Warnf("SBI register address: %v", err)
+	}
+	if addrs.Empty() {
+		addrs.IPv4 = factory.UDM_DEFAULT_IPV4
+	}
+	if addrs.FQDN != "" && addrs.IPv4 != "" {
+		logger.UtilLog.Warnf("SBI register address: registering FQDN %s, not IPv4 %s", addrs.FQDN, addrs.IPv4)
+	}
+	udmContext.RegisterIPv4 = cmp.Or(addrs.FQDN, addrs.IPv4)
+	udmContext.RegisterIPv6 = addrs.IPv6
+
+	if udmContext.SbiPreference, err = sbiaddr.ParsePreference(sbi.PreferredFamily); err != nil {
+		logger.UtilLog.Warnf("SBI preferredFamily: %v; using IPv4", err)
 	}
 }
 

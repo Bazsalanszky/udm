@@ -117,7 +117,7 @@ func executeNfDiscoveryRequest(
 			nfInstanceIDCond := models.NewNfInstanceIdCond()
 			nfInstanceIDCond.SetNfInstanceId(nfInstanceID)
 			subscrCond := models.NfInstanceIdCondAsSubscrCond(nfInstanceIDCond)
-			nrfSubscriptionData := models.NewSubscriptionData(fmt.Sprintf("%s/nudm-callback/v1/nf-status-notify", udmSelf.GetIPv4Uri()))
+			nrfSubscriptionData := models.NewSubscriptionData(fmt.Sprintf("%s/nudm-callback/v1/nf-status-notify", udmSelf.GetSbiUri()))
 			nrfSubscriptionData.SetSubscrCond(subscrCond)
 			nrfSubscriptionData.SetReqNfType(requestNfType)
 
